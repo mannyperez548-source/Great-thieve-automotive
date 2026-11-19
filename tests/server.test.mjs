@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import {EventEmitter} from 'node:events';
+const data=fs.mkdtempSync(path.join(os.tmpdir(),'coastline-test-'));process.env.DATA_DIR=data;process.env.PORT='0';
+const token='12345678-1234-1234-1234-123456789012';fs.writeFileSync(path.join(data,'accounts.json'),JSON.stringify({[token]:{name:'Tester',money:250000,owned:[],color:0x7ce6c8,earnings:0,deliveries:0}}));
+const ticks=[];globalThis.setInterval=(fn,ms)=>{ticks.push({fn,ms});return {unref(){}};};let now=1800000000000;Date.now=()=>now;
+const {JOBS,CRIMES,ISLANDS,AIRPORTS,onLand}=await import('../public/world-data.js');assert.equal(JOBS.length,27);assert.equal(CRIMES.length,3);assert.equal(ISLANDS.length,3);assert.equal(AIRPORTS.length,2);for(const j of JOBS.filter(j=>j.mode==='boat'))for(const p of j.points)assert(!onLand(p[0],p[1]),j.id+' must target water');
+const {server,wss,clients}=await import('../server.js');if(!server.listening)await new Promise(resolve=>server.once('listening',resolve));
+class Socket extends EventEmitter{readyState=1;messages=[];send(s){this.messages.push(JSON.parse(s));}close(){this.emit('close');}}
+const socket=new Socket();wss.emit('connection',socket);const send=m=>socket.emit('message',Buffer.from(JSON.stringify(m)));const last=t=>socket.messages.filter(m=>m.type===t).at(-1);
+send({type:'hello',token});const c=[...clients.values()][0];assert(c);const welcome=last('welcome');
+assert.equal(welcome.catalog.filter(i=>i.type==='car').length,20);assert.equal(welcome.catalog.filter(i=>i.type==='boat').length,5);assert.equal(welcome.catalog.filter(i=>i.kind==='house').length,30);assert.equal(welcome.catalog.filter(i=>i.kind==='apartment').length,5);assert.equal(welcome.catalog.filter(i=>i.kind==='penthouse').length,3);assert.equal(welcome.catalog.filter(i=>i.type==='plane').length,2);
+const walk=(x,z)=>{while(Math.hypot(c.x-x,c.z-z)>.1){const d=Math.hypot(c.x-x,c.z-z),step=Math.min(14,d);now+=1000;send({type:'move',x:c.x+(x-c.x)/d*step,z:c.z+(z-c.z)/d*step,y:c.y,yaw:0,mode:c.mode,vehicle:c.vehicle});}};
+walk(-26,70);send({type:'job',job:'courier'});assert.equal(c.job.kind,'courier');const target={...c.job.target};walk(target.x,target.z);now+=7000;const before=c.account.money;send({type:'complete'});assert.equal(c.job,null);assert.equal(c.account.money,before+650);
+send({type:'buy',id:'sunrunner'});assert(c.account.owned.includes('sunrunner'));const bal=c.account.money;send({type:'buy',id:'sunrunner'});assert.equal(c.account.money,bal);send({type:'spawn',id:'sunrunner'});assert.equal(c.mode,'car');
+const prevX=c.x;now+=100;send({type:'move',x:1400,z:800,yaw:0,mode:'car',vehicle:'sunrunner'});assert.equal(c.x,prevX);assert(last('correct'));send({type:'exit'});
+send({type:'buy',id:'skiff'});send({type:'spawn',id:'skiff'});assert.equal(c.mode,'foot');walk(170,64);send({type:'spawn',id:'skiff'});assert.equal(c.mode,'boat');send({type:'job',job:'dock'});assert.equal(c.job.kind,'dock');send({type:'cancel'});send({type:'exit'});assert.equal(c.mode,'foot');
+send({type:'buy',id:'propeller'});walk(-460,-365);send({type:'spawn',id:'propeller'});assert.equal(c.mode,'plane');now+=1000;send({type:'move',x:c.x,z:c.z,y:15,yaw:0,mode:'plane',vehicle:'propeller'});assert.equal(c.y,15);send({type:'exit'});assert.equal(c.mode,'plane');now+=1000;send({type:'move',x:c.x,z:c.z,y:0,yaw:0,mode:'plane',vehicle:'propeller'});send({type:'exit'});assert.equal(c.mode,'foot');
+walk(-216,-28);send({type:'crime',id:'store'});assert(c.job.crime);assert.equal(c.account.heat,1);const tick=ticks.find(t=>t.ms===100).fn;c.guard=true;
+for(let i=0;i<50;i++){now+=600;send({type:'shoot'});tick();}assert.equal(c.job.phase,'escape');walk(-624,500);now+=7000;send({type:'complete'});assert.equal(c.job,null);assert.equal(c.account.crimeXP,1);
+for(let i=0;i<70;i++){now+=400;send({type:'shoot'});tick();}assert.equal(c.account.heat,0);
+const b=c.account.money;walk(170,64);send({type:'travel',name:'Beacon Landing'});assert.equal(c.x,290);assert.equal(c.z,-360);assert.equal(c.account.money,b-150);
+const saved=JSON.parse(fs.readFileSync(path.join(data,'accounts.json'),'utf8'));assert(saved[token].owned.includes('propeller'));
+const response=await fetch('http://127.0.0.1:'+server.address().port+'/health');assert.equal(await response.text(),'ok');
+console.log('PASS: catalog totals, courier payouts, duplicate purchase protection, movement bounds, marina spawning, aircraft ownership and altitude exit rules, criminal raid/escape/heat, ferry cost, JSON save and HTTP health. Transport is mocked, not a real WebSocket integration test.');
+server.close();fs.rmSync(data,{recursive:true,force:true});process.exit(0);
